@@ -64,47 +64,54 @@ def _post_url(bs_idx, host="https://www.gwangju.ac.kr"):
 
 
 def _read_post(bs_idx):
-    """게시글 번호로 상세 페이지를 직접 확인합니다."""
-    for host in ["https://www.gwangju.ac.kr", "https://m.gwangju.ac.kr"]:
-        post_url = _post_url(bs_idx, host)
-        try:
-            r = requests.get(post_url, headers=HEADERS, timeout=12)
-            if not r.ok:
-                continue
-        except requests.RequestException:
-            continue
+    """게시글 번호 하나를 빠르게 확인합니다.
 
-        detail = BeautifulSoup(r.text, "html.parser")
-        page_text = " ".join(detail.stripped_strings)
+    Render의 무료 인스턴스에서 요청이 오래 걸리지 않도록
+    PC 홈페이지 한 곳만 확인하고 타임아웃도 짧게 둡니다.
+    """
+    post_url = _post_url(bs_idx, "https://www.gwangju.ac.kr")
+    try:
+        r = requests.get(post_url, headers=HEADERS, timeout=(2, 4))
+        if not r.ok:
+            return None
+    except requests.RequestException:
+        return None
 
-        if "메뉴" not in page_text:
-            continue
-        if not any(word in page_text for word in ["학생정식", "교직원", "식단"]):
-            continue
+    # 비정상적으로 큰 HTML은 파싱하지 않습니다.
+    if len(r.content) > 2_000_000:
+        return None
 
-        title = ""
-        for selector in ["h3", "h4", ".bbs_title", ".view_title", ".subject", "title"]:
-            for node in detail.select(selector):
-                value = " ".join(node.stripped_strings).strip()
-                if "메뉴" in value and any(word in value for word in ["학생", "교직원", "식단"]):
-                    title = value
-                    break
-            if title:
+    detail = BeautifulSoup(r.text, "html.parser")
+    page_text = " ".join(detail.stripped_strings)
+
+    if "메뉴" not in page_text:
+        return None
+    if not any(word in page_text for word in ["학생정식", "교직원", "식단"]):
+        return None
+
+    title = ""
+    for selector in ["h3", "h4", ".bbs_title", ".view_title", ".subject", "title"]:
+        for node in detail.select(selector):
+            value = " ".join(node.stripped_strings).strip()
+            if "메뉴" in value and any(word in value for word in ["학생", "교직원", "식단"]):
+                title = value
                 break
-
-        if not title:
-            match = re.search(
-                r"(20\d{2}[.\-/]\s*\d{1,2}[.\-/]\s*\d{1,2}"
-                r"[^\n]{0,140}(?:학생정식|교직원|식단)[^\n]{0,140}메뉴[^\n]*)",
-                page_text,
-            )
-            if match:
-                title = " ".join(match.group(1).split())
-
         if title:
-            return {"title": title, "url": post_url, "bs_idx": bs_idx}
+            break
 
-    return None
+    if not title:
+        match = re.search(
+            r"(20\d{2}[.\-/]\s*\d{1,2}[.\-/]\s*\d{1,2}"
+            r"[^\n]{0,140}(?:학생정식|교직원|식단)[^\n]{0,140}메뉴[^\n]*)",
+            page_text,
+        )
+        if match:
+            title = " ".join(match.group(1).split())
+
+    if not title:
+        return None
+
+    return {"title": title, "url": post_url, "bs_idx": bs_idx}
 
 
 def _extract_candidate_indices(html, base_url):
@@ -156,36 +163,31 @@ def _fallback_probe_indices():
 
 
 def get_latest_post():
-    """광주대학교 최신 식단 게시글을 찾습니다.
+    """최근 식단 글을 짧은 범위에서만 확인합니다.
 
-    1) PC/모바일 식당메뉴 목록에서 게시글 번호 수집
-    2) Render 등에서 목록 행이 비어 보이면 최근 번호를 직접 확인
+    이전 버전은 Render에서 게시판 목록을 못 읽으면 많은 게시글 번호를
+    순차 조회했고, 그 과정에서 worker가 종료될 수 있었습니다.
+    현재는 확인된 기준 게시글(681) 주변의 소수 번호만 조회합니다.
     """
-    candidates = set()
+    today = date.today()
+    weeks = max(0, (today - KNOWN_POST_WEEK).days // 7)
+    expected = KNOWN_POST_INDEX + weeks
 
-    for board_url in BOARD_URLS:
-        try:
-            r = requests.get(board_url, headers=HEADERS, timeout=15)
-            if r.ok:
-                candidates.update(_extract_candidate_indices(r.text, board_url))
-        except requests.RequestException:
-            pass
+    # 현재 주 예상값을 먼저 보고, 바로 앞뒤 소수 번호만 확인
+    candidates = [expected, expected + 1, expected - 1, expected + 2, expected - 2]
 
-    # 목록에서 번호가 잡히면 큰 번호부터 상세 글을 확인합니다.
-    for bs_idx in sorted(candidates, reverse=True)[:20]:
-        post = _read_post(bs_idx)
-        if post:
-            return post
-
-    # Render에서 광주대 목록이 껍데기만 내려오는 경우를 위한 fallback.
-    for bs_idx in _fallback_probe_indices():
+    checked = set()
+    for bs_idx in candidates:
+        if bs_idx < 1 or bs_idx in checked:
+            continue
+        checked.add(bs_idx)
         post = _read_post(bs_idx)
         if post:
             return post
 
     raise RuntimeError(
-        "광주대학교 식당메뉴 목록과 최근 게시글을 모두 확인했지만 "
-        "현재 식단 게시글을 찾지 못했습니다."
+        "최근 식단 게시글을 확인하지 못했습니다. "
+        "광주대학교 게시글 번호가 예상 범위를 벗어났거나 외부 접속이 일시적으로 제한된 상태입니다."
     )
 
 
@@ -222,11 +224,32 @@ def find_excel_attachment(post_url):
 
 
 def download_workbook(url):
-    r = requests.get(url, headers=HEADERS, timeout=20)
-    r.raise_for_status()
-    if len(r.content) < 100:
+    """첨부파일을 메모리 제한을 두고 내려받습니다."""
+    try:
+        with requests.get(url, headers=HEADERS, timeout=(2, 8), stream=True) as r:
+            r.raise_for_status()
+            chunks = []
+            total = 0
+            max_bytes = 5 * 1024 * 1024  # 5MB
+            for chunk in r.iter_content(chunk_size=64 * 1024):
+                if not chunk:
+                    continue
+                total += len(chunk)
+                if total > max_bytes:
+                    raise RuntimeError("식단 첨부파일이 예상보다 너무 커서 불러오기를 중단했습니다.")
+                chunks.append(chunk)
+            data = b"".join(chunks)
+    except requests.RequestException as exc:
+        raise RuntimeError(f"식단 첨부파일 다운로드에 실패했습니다: {exc}") from exc
+
+    if len(data) < 100:
         raise RuntimeError("첨부 식단표를 내려받았지만 파일 내용이 비어 있습니다.")
-    return r.content
+
+    # xlsx는 ZIP 형식이므로 PK 시그니처로 HTML 오류 페이지를 걸러냅니다.
+    if not data.startswith(b"PK"):
+        raise RuntimeError("광주대학교 서버가 엑셀 파일 대신 다른 응답을 반환했습니다.")
+
+    return data
 
 
 def workbook_matrix(binary):
