@@ -1,49 +1,42 @@
-# 광주대학교 오늘의 학식 — 공유용 안정 버전
+# 광주대학교 오늘의 학식 — 수정본
 
-이 버전은 공개 사이트가 광주대학교 홈페이지를 직접 크롤링하지 않습니다.
+광주대학교 공식 `진월광장 > 식당메뉴` 게시판의 최신 글과 엑셀 첨부파일을 읽어
+날짜별 학생정식을 보여주는 바이브 코딩 연습 프로젝트입니다.
 
-구조:
-1. 내 Mac에서 `광주대_식단_업데이트.command`를 실행
-2. 광주대학교 공식 식단을 읽어 `menu.json` 생성
-3. GitHub에 `menu.json`을 업로드
-4. GitHub Pages가 학생정식/푸드단품을 공개
+## 실행
 
-## 처음 한 번: 식단 데이터 만들기
+이미 `.venv`를 만들어 사용하던 경우:
 
-1. 이 폴더를 Mac에 둡니다.
-2. `광주대_식단_업데이트.command`를 더블클릭합니다.
-3. 보안 경고가 뜨면 Finder에서 파일을 우클릭 → 열기.
-4. 성공하면 같은 폴더의 `menu.json`이 최신 식단으로 바뀝니다.
+```bash
+source .venv/bin/activate
+pip install -r requirements.txt
+python app.py
+```
 
-## GitHub에 올릴 파일
+새 폴더에서 처음 실행하는 경우:
 
-공개 저장소 최상단에 다음 파일을 올립니다.
+```bash
+python3 -m venv .venv
+source .venv/bin/activate
+pip install -r requirements.txt
+python app.py
+```
 
-- index.html
-- style.css
-- app.js
-- menu.json
-- .nojekyll
+브라우저에서 아래 주소를 엽니다.
 
-`update_menu.py`, `.command`, `updater-requirements.txt`, `.venv`는 공개 사이트 실행에는 필요하지 않습니다.
-관리용으로 저장소에 함께 보관해도 되지만 `.venv`는 올리지 마세요.
+```text
+http://127.0.0.1:5000
+```
 
-## GitHub Pages 켜기
+## 이번 수정 내용
 
-Repository → Settings → Pages
+- 게시글 제목 문구에만 의존하지 않고 `bs_idx` 기준으로 최신 식당메뉴 글 탐색
+- 첨부 엑셀 자동 탐색
+- 게시글 제목의 주간 날짜 범위 분석
+- 학생정식 영역을 찾아 날짜별 메뉴 데이터로 변환
+- 날짜 탭으로 월~금 메뉴 전환
+- 오늘 메뉴가 있으면 오늘을 우선 선택하고, 없으면 다음 이용 가능한 날짜 선택
+- 데이터가 없거나 형식이 달라도 JavaScript `undefined.length` 오류가 나지 않도록 방어 처리
+- 원본 엑셀 표 대신 실제 사용자용 메뉴 카드 표시
 
-- Source: Deploy from a branch
-- Branch: main
-- Folder: /(root)
-- Save
-
-잠시 뒤 `https://사용자이름.github.io/저장소이름/` 형태의 공개 주소가 생깁니다.
-
-## 이후 매주 업데이트
-
-1. `광주대_식단_업데이트.command` 더블클릭
-2. 새로 생성된 `menu.json` 하나만 GitHub에 업로드
-3. Commit changes
-4. 잠시 뒤 같은 GitHub Pages 주소에 새 메뉴가 반영됩니다.
-
-Render는 이 버전에서는 필요하지 않습니다.
+학교 엑셀 양식이 크게 바뀌면 `/api/latest`의 `debug_rows`를 통해 원본 셀 구조를 확인할 수 있습니다.

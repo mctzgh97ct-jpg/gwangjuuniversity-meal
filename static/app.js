@@ -9,17 +9,11 @@ const selectedDate = document.querySelector("#selectedDate");
 const mealList = document.querySelector("#mealList");
 const emptyMessage = document.querySelector("#emptyMessage");
 const parserNote = document.querySelector("#parserNote");
-const studentTab = document.querySelector("#studentTab");
-const foodTab = document.querySelector("#foodTab");
-const mealCardLabel = document.querySelector("#mealCardLabel");
 
 let mealDays = [];
 let activeDate = null;
-let activeCategory = "student";
 
 button.addEventListener("click", loadLatest);
-studentTab.addEventListener("click", () => setCategory("student"));
-foodTab.addEventListener("click", () => setCategory("food"));
 window.addEventListener("DOMContentLoaded", loadLatest);
 
 async function loadLatest() {
@@ -42,17 +36,13 @@ async function loadLatest() {
     mealDays = Array.isArray(data.days) ? data.days : [];
     activeDate = data.default_date || mealDays[0]?.date || null;
 
-    // 이번 주 전체에 푸드단품이 하나라도 있으면 탭을 정상 표시합니다.
-    const hasFood = mealDays.some((day) => Array.isArray(day.food_items) && day.food_items.length > 0);
-    foodTab.classList.toggle("category-tab-muted", !hasFood);
-
     renderDateTabs();
     renderMeal(activeDate);
     mealSection.classList.remove("hidden");
 
     parserNote.textContent = data.parse_note || "광주대학교 공식 식단표에서 불러온 메뉴입니다.";
     statusBox.classList.add("success");
-    statusBox.textContent = "최신 학생정식·푸드단품 메뉴를 불러왔어요.";
+    statusBox.textContent = "최신 학생정식 메뉴를 불러왔어요.";
   } catch (error) {
     mealDays = [];
     activeDate = null;
@@ -62,15 +52,6 @@ async function loadLatest() {
   } finally {
     button.disabled = false;
   }
-}
-
-function setCategory(category) {
-  activeCategory = category;
-  studentTab.classList.toggle("active", category === "student");
-  foodTab.classList.toggle("active", category === "food");
-  studentTab.setAttribute("aria-pressed", category === "student" ? "true" : "false");
-  foodTab.setAttribute("aria-pressed", category === "food" ? "true" : "false");
-  renderMeal(activeDate);
 }
 
 function renderDateTabs() {
@@ -125,15 +106,9 @@ function renderMeal(dateString) {
     ? `${day.date} ${day.weekday || ""}`
     : `${parsed.getMonth() + 1}월 ${parsed.getDate()}일 ${day.weekday || ""}요일`;
 
-  const isFood = activeCategory === "food";
-  const categoryLabel = isFood ? "푸드단품" : "학생정식";
-  mealCardLabel.textContent = categoryLabel;
-
-  const rawItems = isFood ? day.food_items : (day.student_items || day.items);
-  const items = Array.isArray(rawItems) ? rawItems.filter(Boolean) : [];
-
+  const items = Array.isArray(day.items) ? day.items.filter(Boolean) : [];
   if (!items.length) {
-    emptyMessage.textContent = `이 날짜에는 등록된 ${categoryLabel} 메뉴가 없어요.`;
+    emptyMessage.textContent = "이 날짜에는 등록된 학생정식 메뉴가 없어요.";
     emptyMessage.classList.remove("hidden");
     return;
   }

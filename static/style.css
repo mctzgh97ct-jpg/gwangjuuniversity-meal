@@ -106,36 +106,6 @@ h1 {
 .date-tab.active { background: var(--ink); color: #fff; border-color: var(--ink); }
 .date-tab.active span { color: #d0d5dd; }
 
-
-.category-tabs {
-  display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 9px;
-  margin-top: 16px;
-  padding: 5px;
-  border-radius: 16px;
-  background: #f2f4f7;
-}
-
-.category-tab {
-  border: 0;
-  border-radius: 12px;
-  padding: 11px 14px;
-  background: transparent;
-  color: var(--muted);
-  cursor: pointer;
-  font: inherit;
-  font-weight: 800;
-}
-
-.category-tab.active {
-  background: #fff;
-  color: var(--ink);
-  box-shadow: 0 2px 8px rgba(0,0,0,.06);
-}
-
-.category-tab-muted:not(.active) { opacity: .62; }
-
 .meal-card {
   margin-top: 16px;
   padding: 24px;

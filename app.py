@@ -15,12 +15,6 @@ except Exception:
     pass
 
 BOARD_URL = "https://www.gwangju.ac.kr/bbs/?b_id=gwangju_jinwol_rm&mn=553&site=gwangju"
-BOARD_URLS = [
-    "https://www.gwangju.ac.kr/bbs/?b_id=gwangju_jinwol_rm&mn=553&site=gwangju&type=lists",
-    "https://m.gwangju.ac.kr/bbs/?b_id=gwangju_jinwol_rm&mn=553&site=gwangju&type=lists",
-]
-KNOWN_POST_INDEX = 681
-KNOWN_POST_WEEK = date(2026, 9, 21)
 BASE_URL = "https://www.gwangju.ac.kr"
 HEADERS = {
     "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 "
@@ -52,143 +46,79 @@ def canonical_post_url(bs_idx):
     return f"{BASE_URL}/bbs/?{query}"
 
 
-def _post_url(bs_idx, host="https://www.gwangju.ac.kr"):
-    query = urlencode({
-        "b_id": "gwangju_jinwol_rm",
-        "mn": "553",
-        "site": "gwangju",
-        "type": "view",
-        "bs_idx": str(bs_idx),
-    })
-    return f"{host}/bbs/?{query}"
+def get_latest_post():
+    """식당메뉴 목록에서 가장 큰 bs_idx의 게시글을 최신 글로 선택합니다.
 
-
-def _read_post(bs_idx):
-    """게시글 번호 하나를 빠르게 확인합니다.
-
-    Render의 무료 인스턴스에서 요청이 오래 걸리지 않도록
-    PC 홈페이지 한 곳만 확인하고 타임아웃도 짧게 둡니다.
+    제목 문구에만 의존하지 않아 학교가 제목 표현을 조금 바꿔도 동작하도록 했습니다.
     """
-    post_url = _post_url(bs_idx, "https://www.gwangju.ac.kr")
-    try:
-        r = requests.get(post_url, headers=HEADERS, timeout=(2, 4))
-        if not r.ok:
-            return None
-    except requests.RequestException:
-        return None
+    r = requests.get(BOARD_URL, headers=HEADERS, timeout=15)
+    r.raise_for_status()
+    soup = BeautifulSoup(r.text, "html.parser")
 
-    # 비정상적으로 큰 HTML은 파싱하지 않습니다.
-    if len(r.content) > 2_000_000:
-        return None
+    candidates = {}
+    for a in soup.find_all("a", href=True):
+        href = urljoin(BASE_URL, a.get("href", ""))
+        parsed = urlparse(href)
+        qs = parse_qs(parsed.query)
+        bs_values = qs.get("bs_idx")
+        if not bs_values:
+            continue
 
+        try:
+            bs_idx = int(bs_values[0])
+        except (TypeError, ValueError):
+            continue
+
+        # 식당메뉴 게시판이 아닌 링크는 제외합니다.
+        b_id = (qs.get("b_id") or [""])[0]
+        if b_id and b_id != "gwangju_jinwol_rm":
+            continue
+
+        own_text = " ".join(a.stripped_strings).strip()
+        parent_text = " ".join(a.parent.stripped_strings).strip() if a.parent else ""
+        row = a.find_parent("tr")
+        row_text = " ".join(row.stripped_strings).strip() if row else ""
+        title_text = own_text or parent_text or row_text
+
+        # 동일 게시글 링크가 여러 개면 더 설명적인 텍스트를 보존합니다.
+        current = candidates.get(bs_idx, "")
+        if len(title_text) > len(current):
+            candidates[bs_idx] = title_text
+
+    if not candidates:
+        raise RuntimeError("식단 게시글 링크를 찾지 못했습니다. 학교 홈페이지 구조가 바뀌었을 수 있습니다.")
+
+    latest_idx = max(candidates)
+    post_url = canonical_post_url(latest_idx)
+
+    # 실제 상세 페이지에서 제목을 다시 확인합니다.
+    r = requests.get(post_url, headers=HEADERS, timeout=15)
+    r.raise_for_status()
     detail = BeautifulSoup(r.text, "html.parser")
-    page_text = " ".join(detail.stripped_strings)
-
-    if "메뉴" not in page_text:
-        return None
-    if not any(word in page_text for word in ["학생정식", "교직원", "식단"]):
-        return None
 
     title = ""
     for selector in ["h3", "h4", ".bbs_title", ".view_title", ".subject", "title"]:
         for node in detail.select(selector):
-            value = " ".join(node.stripped_strings).strip()
-            if "메뉴" in value and any(word in value for word in ["학생", "교직원", "식단"]):
-                title = value
+            text = " ".join(node.stripped_strings).strip()
+            if "메뉴" in text and ("학생" in text or "교직원" in text):
+                title = text
                 break
         if title:
             break
 
     if not title:
+        page_text = "\n".join(detail.stripped_strings)
         match = re.search(
-            r"(20\d{2}[.\-/]\s*\d{1,2}[.\-/]\s*\d{1,2}"
-            r"[^\n]{0,140}(?:학생정식|교직원|식단)[^\n]{0,140}메뉴[^\n]*)",
+            r"(20\d{2}[.\-/]\s*\d{1,2}[.\-/]\s*\d{1,2}[^\n]{0,80}(?:학생정식|교직원)[^\n]{0,80}메뉴[^\n]*)",
             page_text,
         )
         if match:
             title = " ".join(match.group(1).split())
 
     if not title:
-        return None
+        title = candidates[latest_idx] or f"식당메뉴 게시글 #{latest_idx}"
 
-    return {"title": title, "url": post_url, "bs_idx": bs_idx}
-
-
-def _extract_candidate_indices(html, base_url):
-    soup = BeautifulSoup(html, "html.parser")
-    found = set()
-
-    for a in soup.find_all("a", href=True):
-        href = urljoin(base_url, a.get("href", ""))
-        parsed = urlparse(href)
-        qs = parse_qs(parsed.query)
-        values = qs.get("bs_idx")
-        if not values:
-            continue
-        try:
-            found.add(int(values[0]))
-        except (TypeError, ValueError):
-            pass
-
-    # 일부 환경에서는 게시글 링크가 일반 a 태그가 아니라
-    # 스크립트/onclick 안에 들어갈 수 있어 원문에서도 다시 찾습니다.
-    for pattern in [
-        r"bs_idx=(\d+)",
-        r"bs_idx%3D(\d+)",
-        r"""["']bs_idx["']\s*[:=]\s*["']?(\d+)""",
-    ]:
-        for value in re.findall(pattern, html, flags=re.I):
-            try:
-                found.add(int(value))
-            except ValueError:
-                pass
-
-    return found
-
-
-def _fallback_probe_indices():
-    """목록이 비어 보일 때 최근 게시글 번호를 직접 확인할 후보를 만듭니다.
-
-    2026-09-21 주간 게시글이 bs_idx=681이었던 실제 확인값을 기준점으로 사용합니다.
-    이후에는 주당 약 1건의 식단 게시글이 추가된다는 점을 이용해 가까운 범위만 탐색합니다.
-    """
-    today = date.today()
-    weeks = max(0, (today - KNOWN_POST_WEEK).days // 7)
-    expected = KNOWN_POST_INDEX + weeks
-
-    # 예상값보다 조금 앞쪽도 확인하고, 뒤로 충분히 내려오며 찾습니다.
-    high = expected + 6
-    low = max(KNOWN_POST_INDEX - 2, expected - 16)
-    return list(range(high, low - 1, -1))
-
-
-def get_latest_post():
-    """최근 식단 글을 짧은 범위에서만 확인합니다.
-
-    이전 버전은 Render에서 게시판 목록을 못 읽으면 많은 게시글 번호를
-    순차 조회했고, 그 과정에서 worker가 종료될 수 있었습니다.
-    현재는 확인된 기준 게시글(681) 주변의 소수 번호만 조회합니다.
-    """
-    today = date.today()
-    weeks = max(0, (today - KNOWN_POST_WEEK).days // 7)
-    expected = KNOWN_POST_INDEX + weeks
-
-    # 현재 주 예상값을 먼저 보고, 바로 앞뒤 소수 번호만 확인
-    candidates = [expected, expected + 1, expected - 1, expected + 2, expected - 2]
-
-    checked = set()
-    for bs_idx in candidates:
-        if bs_idx < 1 or bs_idx in checked:
-            continue
-        checked.add(bs_idx)
-        post = _read_post(bs_idx)
-        if post:
-            return post
-
-    raise RuntimeError(
-        "최근 식단 게시글을 확인하지 못했습니다. "
-        "광주대학교 게시글 번호가 예상 범위를 벗어났거나 외부 접속이 일시적으로 제한된 상태입니다."
-    )
+    return {"title": title, "url": post_url, "bs_idx": latest_idx}
 
 
 def find_excel_attachment(post_url):
@@ -224,32 +154,11 @@ def find_excel_attachment(post_url):
 
 
 def download_workbook(url):
-    """첨부파일을 메모리 제한을 두고 내려받습니다."""
-    try:
-        with requests.get(url, headers=HEADERS, timeout=(2, 8), stream=True) as r:
-            r.raise_for_status()
-            chunks = []
-            total = 0
-            max_bytes = 5 * 1024 * 1024  # 5MB
-            for chunk in r.iter_content(chunk_size=64 * 1024):
-                if not chunk:
-                    continue
-                total += len(chunk)
-                if total > max_bytes:
-                    raise RuntimeError("식단 첨부파일이 예상보다 너무 커서 불러오기를 중단했습니다.")
-                chunks.append(chunk)
-            data = b"".join(chunks)
-    except requests.RequestException as exc:
-        raise RuntimeError(f"식단 첨부파일 다운로드에 실패했습니다: {exc}") from exc
-
-    if len(data) < 100:
+    r = requests.get(url, headers=HEADERS, timeout=20)
+    r.raise_for_status()
+    if len(r.content) < 100:
         raise RuntimeError("첨부 식단표를 내려받았지만 파일 내용이 비어 있습니다.")
-
-    # xlsx는 ZIP 형식이므로 PK 시그니처로 HTML 오류 페이지를 걸러냅니다.
-    if not data.startswith(b"PK"):
-        raise RuntimeError("광주대학교 서버가 엑셀 파일 대신 다른 응답을 반환했습니다.")
-
-    return data
+    return r.content
 
 
 def workbook_matrix(binary):
@@ -358,18 +267,8 @@ def row_contains(matrix, row_index, keywords):
     return any(k.replace(" ", "") in text for k in keywords)
 
 
-def normalized_row_text(row):
-    return re.sub(r"\s+", "", " ".join(row)).lower()
-
-
-def choose_horizontal_date_header(matrix, dates, anchor_keywords=None):
-    """날짜/요일이 가로로 놓인 행을 찾습니다.
-
-    anchor_keywords가 있으면 해당 메뉴 구역과 가까운 날짜 행을 우선합니다.
-    """
+def choose_horizontal_date_header(matrix, dates):
     candidates = []
-    normalized_keywords = [re.sub(r"\s+", "", k).lower() for k in (anchor_keywords or [])]
-
     for r, row in enumerate(matrix):
         mapping = {}
         for c, value in enumerate(row):
@@ -377,6 +276,7 @@ def choose_horizontal_date_header(matrix, dates, anchor_keywords=None):
                 if value_matches_date(value, d):
                     mapping[c] = d
                     break
+            # 날짜 없이 요일만 적힌 표도 지원합니다.
             compact = re.sub(r"\s+", "", value)
             if c not in mapping:
                 for d in dates:
@@ -384,27 +284,18 @@ def choose_horizontal_date_header(matrix, dates, anchor_keywords=None):
                     if compact in {w, f"{w}요일", f"({w})"}:
                         mapping[c] = d
                         break
-
         distinct = len(set(mapping.values()))
-        if distinct < 2:
-            continue
-
-        proximity = 0
-        if normalized_keywords:
-            for rr in range(max(0, r - 8), min(len(matrix), r + 12)):
-                row_text = normalized_row_text(matrix[rr])
-                if any(k in row_text for k in normalized_keywords):
-                    proximity += max(1, 12 - abs(rr - r))
-        else:
+        if distinct >= 2:
+            # 학생정식 표 근처의 날짜 행을 우선합니다.
+            proximity = 0
             for rr in range(max(0, r - 5), min(len(matrix), r + 6)):
                 if row_contains(matrix, rr, ["학생정식", "학생 식당", "학생"]):
                     proximity += max(1, 6 - abs(rr - r))
-
-        candidates.append((distinct, proximity, r, mapping))
+            candidates.append((distinct, proximity, r, mapping))
 
     if not candidates:
         return None
-    candidates.sort(key=lambda x: (x[1], x[0]), reverse=True)
+    candidates.sort(key=lambda x: (x[0], x[1]), reverse=True)
     _, _, row_index, mapping = candidates[0]
     return row_index, mapping
 
@@ -424,6 +315,7 @@ def infer_day_columns(matrix, dates):
                     count += 1
         scores.append((count, c))
 
+    # 첫 열은 라벨일 가능성이 높으므로, 데이터가 있는 열들 중 연속 구간을 우선합니다.
     useful = [c for count, c in scores if count >= 2]
     if len(useful) < len(dates):
         return {}
@@ -442,69 +334,52 @@ def infer_day_columns(matrix, dates):
     return {c: d for c, d in zip(best[2], dates)}
 
 
-SECTION_ALIASES = {
-    "student": ["학생정식", "학생 정식", "학생식당", "학생 식당"],
-    "food": ["푸드단품", "푸드 단품", "단품메뉴", "단품 메뉴", "푸드코트", "푸드 코트"],
-    "faculty": ["교직원정식", "교직원 정식", "교직원"],
-}
-
-
-def find_section_anchors(matrix, aliases):
-    normalized = [re.sub(r"\s+", "", a).lower() for a in aliases]
-    found = []
+def student_section_bounds(matrix, header_row):
+    """학생정식이 표시된 영역을 찾아 시작/끝 행을 추정합니다."""
+    student_rows = []
+    faculty_rows = []
+    lunch_rows = []
     for r, row in enumerate(matrix):
-        text = normalized_row_text(row)
-        if any(alias in text for alias in normalized):
-            found.append(r)
-    return found
+        joined = " ".join(row).replace(" ", "").lower()
+        if "학생정식" in joined or "학생식당" in joined:
+            student_rows.append(r)
+        elif "학생" in joined and "교직원" not in joined:
+            student_rows.append(r)
+        if "교직원" in joined:
+            faculty_rows.append(r)
+        if "lunch" in joined or "중식" in joined or "점심" in joined:
+            lunch_rows.append(r)
+
+    # 학생 표시가 있으면 그 위치를 중심으로 다음 섹션 전까지 수집합니다.
+    if student_rows:
+        anchor = min(student_rows, key=lambda r: abs(r - header_row))
+        start = max(header_row + 1, anchor + 1)
+        boundaries = [r for r in faculty_rows + student_rows if r > start + 1]
+        end = min(boundaries) if boundaries else min(len(matrix), start + 14)
+        return start, end
+
+    # 학생/교직원 표가 Lunch 행으로 나뉘는 양식은 두 번째 Lunch 블록을 학생식으로 취급합니다.
+    after = [r for r in lunch_rows if r >= header_row]
+    if len(after) >= 2:
+        start = after[1] + 1
+        end = min(len(matrix), start + 10)
+        return start, end
+    if after:
+        start = after[0] + 1
+        end = min(len(matrix), start + 12)
+        return start, end
+
+    return header_row + 1, min(len(matrix), header_row + 14)
 
 
-def section_bounds(matrix, header_row, aliases, all_section_aliases=None):
-    """특정 메뉴 구역의 실제 행 범위를 찾습니다."""
-    anchors = find_section_anchors(matrix, aliases)
-    if not anchors:
-        return None
-
-    # 날짜 행에 가장 가까우면서 보통 그 아래에 있는 라벨을 우선합니다.
-    below = [r for r in anchors if r >= header_row - 1]
-    anchor = min(below, key=lambda r: abs(r - header_row)) if below else min(anchors, key=lambda r: abs(r - header_row))
-    start = anchor + 1
-
-    stop_aliases = all_section_aliases or []
-    stop_norm = [re.sub(r"\s+", "", a).lower() for a in stop_aliases]
-    end = min(len(matrix), start + 14)
-    for r in range(start, min(len(matrix), start + 20)):
-        text = normalized_row_text(matrix[r])
-        if r > start and any(alias in text for alias in stop_norm):
-            end = r
-            break
-        # 새 Lunch 블록이 시작되면 현재 메뉴 구역 종료로 봅니다.
-        if r > start + 1 and text in {"lunch", "중식", "점심"}:
-            end = r
-            break
-    return start, end
-
-
-def collect_section_by_columns(matrix, dates, header_row, col_to_date, aliases):
-    all_aliases = []
-    for values in SECTION_ALIASES.values():
-        all_aliases.extend(values)
-
-    bounds = section_bounds(matrix, header_row, aliases, all_aliases)
-    if not bounds:
-        return {d.isoformat(): [] for d in dates}
-
-    start, end = bounds
+def collect_by_columns(matrix, dates, header_row, col_to_date):
+    start, end = student_section_bounds(matrix, header_row)
     items = {d.isoformat(): [] for d in dates}
-    seen = {d.isoformat(): set() for d in dates}
 
+    # 같은 값이 병합 때문에 반복될 수 있으므로 날짜별 중복은 제거합니다.
+    seen = {d.isoformat(): set() for d in dates}
     for r in range(start, end):
         row = matrix[r]
-        row_text = normalized_row_text(row)
-        # 다른 섹션 라벨 행은 데이터로 포함하지 않습니다.
-        if any(re.sub(r"\s+", "", a).lower() in row_text for a in all_aliases):
-            continue
-
         for col, d in col_to_date.items():
             if col >= len(row):
                 continue
@@ -512,9 +387,7 @@ def collect_section_by_columns(matrix, dates, header_row, col_to_date, aliases):
                 compact = re.sub(r"\s+", "", item)
                 if any(value_matches_date(item, x) for x in dates):
                     continue
-                if any(token in compact for token in [
-                    "학생정식", "교직원", "푸드단품", "단품메뉴", "운영시간", "가격", "원산지"
-                ]):
+                if any(token in compact for token in ["학생정식", "교직원", "운영시간", "가격", "원산지"]):
                     continue
                 key = d.isoformat()
                 if item not in seen[key]:
@@ -523,36 +396,23 @@ def collect_section_by_columns(matrix, dates, header_row, col_to_date, aliases):
     return items
 
 
-def collect_vertical_section(matrix, dates, aliases):
-    """날짜가 행 방향인 표에서 특정 메뉴 구역만 읽는 보조 파서."""
+def collect_vertical(matrix, dates):
+    """날짜가 행 방향으로 배치된 표의 보조 파서."""
     result = {d.isoformat(): [] for d in dates}
-    anchors = find_section_anchors(matrix, aliases)
-    if not anchors:
-        return result
-
-    all_aliases = []
-    for values in SECTION_ALIASES.values():
-        all_aliases.extend(values)
-    all_norm = [re.sub(r"\s+", "", a).lower() for a in all_aliases]
-
-    for anchor in anchors:
-        end = min(len(matrix), anchor + 18)
-        for rr in range(anchor + 1, end):
-            row_text = normalized_row_text(matrix[rr])
-            if rr > anchor + 1 and any(a in row_text for a in all_norm):
-                break
-            target = None
-            for value in matrix[rr]:
-                for d in dates:
-                    if value_matches_date(value, d):
-                        target = d
-                        break
-                if target:
+    for r, row in enumerate(matrix):
+        target = None
+        for value in row:
+            for d in dates:
+                if value_matches_date(value, d):
+                    target = d
                     break
-            if not target:
-                continue
+            if target:
+                break
+        if not target:
+            continue
 
-            key = target.isoformat()
+        key = target.isoformat()
+        for rr in range(r, min(len(matrix), r + 5)):
             for value in matrix[rr]:
                 for item in split_menu_text(value):
                     if value_matches_date(item, target) or is_noise(item):
@@ -562,70 +422,46 @@ def collect_vertical_section(matrix, dates, aliases):
     return result
 
 
-def parse_meal_categories(matrix, title):
+def parse_student_meals(matrix, title):
     dates = parse_title_dates(title)
     if not dates:
         return [], None, "게시글 제목에서 날짜 범위를 읽지 못했습니다."
 
-    # 학생정식과 푸드단품은 표 안에서 위치가 다를 수 있어 날짜 헤더를 각각 찾습니다.
-    student_header = choose_horizontal_date_header(matrix, dates, SECTION_ALIASES["student"])
-    food_header = choose_horizontal_date_header(matrix, dates, SECTION_ALIASES["food"])
+    header = choose_horizontal_date_header(matrix, dates)
+    parse_note = "날짜 열을 식단표에서 확인해 학생정식을 추출했습니다."
 
-    if student_header:
-        student_header_row, student_cols = student_header
+    if header:
+        header_row, col_to_date = header
     else:
-        student_header_row, student_cols = 0, infer_day_columns(matrix, dates)
+        col_to_date = infer_day_columns(matrix, dates)
+        header_row = 0
+        parse_note = "날짜 제목을 기준으로 식단표 열을 추정해 학생정식을 추출했습니다."
 
-    if food_header:
-        food_header_row, food_cols = food_header
-    else:
-        # 같은 주간표 안에 있으면 학생정식과 같은 날짜 열을 쓰는 경우가 많아 우선 재사용합니다.
-        food_header_row, food_cols = student_header_row, dict(student_cols)
+    by_date = collect_by_columns(matrix, dates, header_row, col_to_date) if col_to_date else {}
 
-    student = collect_section_by_columns(
-        matrix, dates, student_header_row, student_cols, SECTION_ALIASES["student"]
-    ) if student_cols else {d.isoformat(): [] for d in dates}
-
-    food = collect_section_by_columns(
-        matrix, dates, food_header_row, food_cols, SECTION_ALIASES["food"]
-    ) if food_cols else {d.isoformat(): [] for d in dates}
-
-    # 가로 파싱에서 못 찾은 카테고리만 세로형 파서를 보조적으로 사용합니다.
-    if not any(student.values()):
-        student = collect_vertical_section(matrix, dates, SECTION_ALIASES["student"])
-    if not any(food.values()):
-        food = collect_vertical_section(matrix, dates, SECTION_ALIASES["food"])
+    # 열 방식으로 전혀 찾지 못했다면 날짜가 세로인 표도 시도합니다.
+    if not by_date or not any(by_date.values()):
+        by_date = collect_vertical(matrix, dates)
+        parse_note = "날짜가 행 방향으로 배치된 식단표를 기준으로 학생정식을 추출했습니다."
 
     days = []
     for d in dates:
-        key = d.isoformat()
         days.append({
-            "date": key,
+            "date": d.isoformat(),
             "weekday": WEEKDAY_KO[d.weekday()],
-            "student_items": student.get(key, []),
-            "food_items": food.get(key, []),
-            # 이전 화면 코드와의 호환성을 위해 유지합니다.
-            "items": student.get(key, []),
+            "items": by_date.get(d.isoformat(), []),
         })
 
     today = date.today()
-    available = [
-        d for d in dates
-        if student.get(d.isoformat()) or food.get(d.isoformat())
-    ]
+    available = [d for d in dates if by_date.get(d.isoformat())]
     if today in available:
         default_date = today
     else:
         future = [d for d in available if d >= today]
         default_date = future[0] if future else (available[-1] if available else dates[0])
 
-    found_food = any(food.values())
-    if found_food:
-        parse_note = "광주대학교 공식 식단표에서 학생정식과 푸드단품을 구분해 불러왔습니다."
-    else:
-        parse_note = "학생정식은 확인했지만 이번 식단표에서 푸드단품 구역을 찾지 못했습니다."
-
     return days, default_date.isoformat(), parse_note
+
 
 def rows_to_preview(matrix, limit=25):
     preview = []
@@ -650,7 +486,7 @@ def api_latest():
         attachment = find_excel_attachment(post["url"])
         binary = download_workbook(attachment)
         matrix = workbook_matrix(binary)
-        days, default_date, parse_note = parse_meal_categories(matrix, post["title"])
+        days, default_date, parse_note = parse_student_meals(matrix, post["title"])
 
         return jsonify({
             "ok": True,
